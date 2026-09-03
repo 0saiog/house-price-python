@@ -267,6 +267,8 @@ Takes about a minute. Writes `models/` and `reports/`.
 
 #### 4. Backend
 
+All commands from the **repo root**:
+
 **Linux / macOS:**
 
 ```bash
@@ -277,7 +279,7 @@ cd backend && uvicorn app.main:app --reload       # http://localhost:8000
 **Windows (PowerShell):**
 
 ```powershell
-Copy-Item backend/.env.example backend/.env
+Copy-Item backend\.env.example backend\.env
 cd backend; uvicorn app.main:app --reload         # http://localhost:8000
 ```
 
