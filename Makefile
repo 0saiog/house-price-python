@@ -55,13 +55,12 @@ endif
 
 # ─── Development ─────────────────────────────────────────────────────────────
 dev: ## Start backend and frontend dev servers (Ctrl+C to stop)
+ifeq ($(OS),Windows_NT)
+	powershell -ExecutionPolicy Bypass -File dev.ps1
+else
 	@echo "Starting backend on http://localhost:8000 ..."
 	@echo "Starting frontend on http://localhost:5173 ..."
 	@echo ""
-ifeq ($(OS),Windows_NT)
-	@Start-Process -NoNewWindow powershell -ArgumentList "-Command", "cd backend; $$(PYTHON) -m uvicorn app.main:app --reload"
-	cd frontend && $(NPM) run dev
-else
 	cd backend && ($(PYTHON) -m uvicorn app.main:app --reload &); \
 	cd frontend && $(NPM) run dev
 endif
