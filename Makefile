@@ -1,4 +1,4 @@
-.PHONY: setup dev backend frontend test clean download-data help
+.PHONY: setup dev backend frontend test clean download-data help docker-build docker-run
 
 # ─── Defaults ────────────────────────────────────────────────────────────────
 PYTHON   ?= python
@@ -7,7 +7,7 @@ NODE     ?= node
 NPM      ?= npm
 JUPYTER  ?= $(PYTHON) -m jupyter lab
 
-HELP_WIDTH = 22
+HELP_WIDTH = 24
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -16,22 +16,32 @@ help: ## Show this help
 # ─── Setup ───────────────────────────────────────────────────────────────────
 setup: ## Full setup: venv + deps + editable install + frontend
 	$(PYTHON) -m venv .venv
-	@echo "Run 'source .venv/bin/activate' (Linux/macOS) or '.venv\\Scripts\\activate' (Windows)"
+	@echo ""
+	@echo "  Activate your venv first:"
+	@echo "    Linux / macOS :  source .venv/bin/activate"
+	@echo "    Windows (PS)  :  .venv\\Scripts\\Activate.ps1"
+	@echo "    Windows (cmd) :  .venv\\Scripts\\activate.bat"
+	@echo ""
 	$(PIP) install -r requirements-dev.txt
 	$(PIP) install -e .
 	cd frontend && $(NPM) install
 	@cp -n backend/.env.example backend/.env 2>/dev/null || true
 	@cp -n frontend/.env.example frontend/.env 2>/dev/null || true
-	@echo "\nDone. Activate your venv, then run 'make dev'."
+	@echo ""
+	@echo "Done. Activate your venv, then run 'make dev'."
 
 # ─── Development ─────────────────────────────────────────────────────────────
-dev: ## Start backend and frontend dev servers (background)
-	$(MAKE) backend & $(MAKE) frontend
+dev: ## Start backend and frontend dev servers (foreground, Ctrl+C to stop)
+	@echo "Starting backend on http://localhost:8000 ..."
+	@echo "Starting frontend on http://localhost:5173 ..."
+	@echo ""
+	cd backend && ($(PYTHON) -m uvicorn app.main:app --reload &); \
+	cd frontend && $(NPM) run dev
 
-backend: ## Start the FastAPI backend (port 8000)
-	cd backend && uvicorn app.main:app --reload
+backend: ## Start the FastAPI backend only (port 8000)
+	cd backend && $(PYTHON) -m uvicorn app.main:app --reload
 
-frontend: ## Start the Vite frontend dev server (port 5173)
+frontend: ## Start the Vite frontend dev server only (port 5173)
 	cd frontend && $(NPM) run dev
 
 notebook: ## Open Jupyter Lab with the training notebook
@@ -41,13 +51,7 @@ notebook: ## Open Jupyter Lab with the training notebook
 download-data: ## Download the Kaggle dataset into notebooks/data/
 	mkdir -p notebooks/data
 	@echo "Downloading from Kaggle..."
-	$(PYTHON) -c "\
-	import urllib.request, zipfile, io, os; \
-	url = 'https://www.kaggle.com/api/v1/datasets/download/juhibhojani/house-price'; \
-	data = urllib.request.urlopen(url).read(); \
-	z = zipfile.ZipFile(io.BytesIO(data)); \
-	z.extractall('notebooks/data'); \
-	print('Extracted to notebooks/data/')"
+	$(PYTHON) -c "import urllib.request, zipfile, io; z=zipfile.ZipFile(io.BytesIO(urllib.request.urlopen('https://www.kaggle.com/api/v1/datasets/download/juhibhojani/house-price').read())); z.extractall('notebooks/data'); print('Extracted to notebooks/data/')"
 
 # ─── Testing ─────────────────────────────────────────────────────────────────
 test: test-backend test-frontend ## Run all tests
@@ -63,7 +67,10 @@ docker-build: ## Build the Docker image
 	docker build -f backend/Dockerfile -t house-price-api .
 
 docker-run: ## Run the Docker image
-	docker run -p 8000:8000 house-price-api
+	docker run -p 8000:8000 --env-file backend/.env house-price-api
+
+docker-up: ## Start with docker compose
+	docker compose up --build
 
 # ─── Cleanup ─────────────────────────────────────────────────────────────────
 clean: ## Remove build artifacts

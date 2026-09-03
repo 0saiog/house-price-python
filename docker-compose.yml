@@ -1,0 +1,30 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# docker-compose.yml — one command to run the full stack
+#
+#   docker compose up --build
+#
+# The API is at http://localhost:8000  (Swagger: http://localhost:8000/docs)
+# The frontend dev server is NOT started here (it needs Node). Use the native
+# setup for frontend hot-reload, or build a static image separately.
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    ports:
+      - "8000:8000"
+    env_file:
+      - backend/.env
+    environment:
+      - HOST=0.0.0.0
+      - PORT=8000
+      - ALLOWED_ORIGIN=http://localhost:5173
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s

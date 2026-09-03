@@ -5,6 +5,7 @@ notebooks/data/
 
 # Python
 .venv/
+venv/
 __pycache__/
 *.egg-info/
 build/
@@ -27,5 +28,7 @@ frontend/*.local
 # Logs and editor noise
 *.log
 .DS_Store
+Thumbs.db
+Desktop.ini
 .idea/
 .vscode/
