@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "house-price"
+version = "1.0.0"
+description = "Shared cleaning and model code for the house price project."
+requires-python = ">=3.11"
+# Runtime deps are pinned in backend/requirements.txt; this package only needs
+# what house_price/ itself imports.
+dependencies = ["numpy", "pandas", "scikit-learn"]
+
+[tool.setuptools]
+packages = ["house_price"]
+
+[tool.pytest.ini_options]
+testpaths = ["backend/tests"]
+pythonpath = [".", "backend"]

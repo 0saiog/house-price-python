@@ -1,0 +1,31 @@
+# The dataset. 102 MB, and Kaggle's to distribute, not ours - the README says
+# how to fetch it in one command.
+notebooks/data/
+*.csv
+
+# Python
+.venv/
+__pycache__/
+*.egg-info/
+build/
+dist/
+*.py[cod]
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Node
+node_modules/
+frontend/dist/
+frontend/*.local
+
+# Secrets and local settings. Only the .example files are committed.
+.env
+.env.*
+!.env.example
+!**/.env.example
+
+# Logs and editor noise
+*.log
+.DS_Store
+.idea/
+.vscode/

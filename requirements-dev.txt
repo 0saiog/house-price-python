@@ -1,0 +1,6 @@
+# Notebook and plotting tools, on top of the service's runtime dependencies.
+-r backend/requirements.txt
+jupyter==1.1.1
+nbconvert==7.17.1
+matplotlib==3.11.1
+seaborn==0.13.2
