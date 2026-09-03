@@ -169,6 +169,8 @@ exported `Pipeline`, so the API doesn't encode anything itself.
 ├── frontend/                   # React + TypeScript + Vite
 ├── models/                     # house_price.pkl (1.5 MB), locations.json, metrics.json
 ├── reports/                    # plots saved by the notebook
+├── assets/                     # helper tools (dataset downloader for Windows)
+├── Makefile                    # cross-platform build commands
 └── pyproject.toml              # makes house_price importable from anywhere
 ```
 
@@ -182,21 +184,55 @@ exported `Pipeline`, so the API doesn't encode anything itself.
 | Node.js + npm | 18+ | `node --version` |
 | Git | any recent | `git --version` |
 
-### 1. Environment
+### Option A — Makefile (Linux / macOS / Git Bash on Windows)
 
 ```bash
+make setup      # creates venv, installs everything, copies .env files
+source .venv/bin/activate
+make dev        # starts backend + frontend
+```
+
+Run `make help` to see all available targets.
+
+### Option B — Manual (all platforms)
+
+#### 1. Python environment
+
+**Linux / macOS:**
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements-dev.txt
+pip install -e .
+```
+
+**Windows (PowerShell):**
+
+```powershell
 python -m venv .venv
-source .venv/bin/activate            # Windows: .venv\Scripts\activate
-pip install -r requirements-dev.txt  # notebook + service
-pip install -e .                     # makes `house_price` importable everywhere
+.venv\Scripts\Activate.ps1
+pip install -r requirements-dev.txt
+pip install -e .
+```
+
+**Windows (cmd):**
+
+```cmd
+python -m venv .venv
+.venv\Scripts\activate.bat
+pip install -r requirements-dev.txt
+pip install -e .
 ```
 
 `pip install -e .` is not optional: `backend/` imports `house_price`, and without it `uvicorn`
 started from inside `backend/` cannot find the package.
 
-### 2. Dataset
+#### 2. Dataset
 
 Only needed if you want to retrain. The trained model is committed so the API and frontend work without it.
+
+**Linux / macOS:**
 
 ```bash
 mkdir -p notebooks/data
@@ -205,10 +241,23 @@ curl -L -o /tmp/house-price.zip \
 unzip -o /tmp/house-price.zip -d notebooks/data
 ```
 
+**Windows (PowerShell):**
+
+```powershell
+mkdir -p notebooks/data
+Invoke-WebRequest -Uri "https://www.kaggle.com/api/v1/datasets/download/juhibhojani/house-price" -OutFile "$env:TEMP\house-price.zip"
+Expand-Archive -Path "$env:TEMP\house-price.zip" -DestinationPath notebooks/data -Force
+```
+
+**Windows (with the included downloader):**
+
+A pre-built Windows dataset downloader is available in `assets/download.exe`.
+Run it from the repository root — it will fetch the Kaggle dataset into `notebooks/data/`.
+
 Source: [kaggle.com/datasets/juhibhojani/house-price](https://www.kaggle.com/datasets/juhibhojani/house-price)
 (102 MB, 187,531 rows). Gitignored, so this repo doesn't redistribute it.
 
-### 3. Notebook
+#### 3. Notebook
 
 ```bash
 jupyter lab notebooks/house_price_model.ipynb    # Kernel → Restart & Run All
@@ -216,20 +265,40 @@ jupyter lab notebooks/house_price_model.ipynb    # Kernel → Restart & Run All
 
 Takes about a minute. Writes `models/` and `reports/`.
 
-### 4. Backend
+#### 4. Backend
+
+**Linux / macOS:**
 
 ```bash
 cp backend/.env.example backend/.env
 cd backend && uvicorn app.main:app --reload       # http://localhost:8000
 ```
 
+**Windows (PowerShell):**
+
+```powershell
+Copy-Item backend/.env.example backend/.env
+cd backend; uvicorn app.main:app --reload         # http://localhost:8000
+```
+
 Swagger UI at <http://localhost:8000/docs>.
 
-### 5. Frontend
+#### 5. Frontend
+
+**Linux / macOS:**
 
 ```bash
 cd frontend
 cp .env.example .env
+npm install
+npm run dev                                       # http://localhost:5173
+```
+
+**Windows (PowerShell):**
+
+```powershell
+cd frontend
+Copy-Item .env.example .env
 npm install
 npm run dev                                       # http://localhost:5173
 ```
@@ -239,6 +308,13 @@ npm run dev                                       # http://localhost:5173
 ```bash
 pytest                       # 8 API tests against the real model
 cd frontend && npm run build # type-checks and builds
+```
+
+### Docker
+
+```bash
+docker build -f backend/Dockerfile -t house-price-api .
+docker run -p 8000:8000 house-price-api
 ```
 
 ## Environment variables
