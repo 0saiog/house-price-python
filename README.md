@@ -1,35 +1,212 @@
 # House Price Prediction
 
-Predicts what a flat or house in India is worth from its city, floor area, layout and condition.
-Trained on 187,531 real listings with pandas + scikit-learn, served by FastAPI, with a React form on top.
+Guesses what a flat or house in India is worth from its city, floor area, layout and condition.
+Trained in a Jupyter notebook on 187,531 real listings, served by FastAPI, with a React form on top.
 
-**Stack:** Python 3.11+ · pandas · scikit-learn · FastAPI · React 19 · TypeScript · Vite
+Stack: pandas, scikit-learn, Jupyter, FastAPI, React + TypeScript + Vite.
 
----
+There's a sibling repo, [`house-price-app`](https://github.com/razecrs/house-price-app), that does
+the same thing in Rust with no Python at all, using
+[Vearo](https://github.com/razecrs/vearo) for the model. The two agree on the data down to the row,
+see [Cross-check](#cross-check).
 
-## Quick start
+## Results
 
-### Option 1 — Docker (any OS, easiest)
+Gradient boosting, trained on `log1p(price)`, scored once on a held-out test split of 12,530
+listings it never saw:
+
+| model | MAE | RMSE | R² | MdAPE | pickle | fit |
+|---|---|---|---|---|---|---|
+| *Rate card (city median rate × area), no model* | *₹32.41 Lac* | *₹71.87 Lac* | *0.647* | *24.1%* | – | – |
+| Linear regression | ₹27.15 Lac | ₹61.05 Lac | 0.745 | 20.6% | 0.0 MB | 1.0s |
+| MLP 128-64 | ₹25.98 Lac | ₹61.26 Lac | 0.744 | 19.5% | 0.6 MB | 19.8s |
+| **Gradient boosting**, exported | **₹23.01 Lac** | **₹49.72 Lac** | **0.831** | **17.5%** | 1.5 MB | 3.6s |
+| Random forest | ₹23.64 Lac | ₹50.53 Lac | 0.826 | 17.3% | 393.7 MB | 16.9s |
+| Gradient boosting, raw target | ₹24.76 Lac | ₹51.16 Lac | 0.821 | 20.1% | 0.6 MB | 1.7s |
+
+Five-fold cross validation gives mean R² **0.816** (sd 0.016), so the single split isn't a lucky one.
+
+The brief suggests trying both a log target and a raw one. Same estimator and seed, only the target
+changes, and the log version is 2.6 points better on MdAPE. Squared error on raw rupees gets
+dominated by the expensive listings, so the raw model spends its effort there and gets worse at
+everything else.
+
+### The brief's log-target tip has a bias in it
+
+The brief says to train on `log1p(y)` and invert with `expm1`. That does help, but the two steps
+don't cancel and it doesn't say so.
+
+Least squares in log space fits `E[log y | x]`, the mean of the log. Exponentiating that gives back
+the **median** of y, not the mean, because `exp` is convex and Jensen's inequality says
+`exp(E[log y]) <= E[y]`. Every prediction lands low and training longer doesn't fix it, because the
+model is doing exactly what it was asked.
+
+It's measurable on this data:
+
+| | MAE | RMSE | R² | MdAPE | predicted total vs actual |
+|---|---|---|---|---|---|
+| the tip as written | ₹23.01 Lac | ₹49.72 Lac | 0.831 | 17.5% | **0.953** |
+| Duan smearing | ₹23.20 Lac | ₹49.17 Lac | 0.835 | 18.2% | 0.990 |
+| parametric, exp(σ²/2) | ₹23.19 Lac | ₹49.18 Lac | 0.835 | 18.2% | 0.989 |
+
+Look at the last column. Written as the brief has it, the model predicts a total **4.7% under** the
+real total. [Duan's smearing estimator](https://doi.org/10.2307/2288126) fixes it: take the training
+residuals in log space, average `exp` of them, scale by that. It lands within 1%. The parametric
+version `exp(σ²/2)` agrees to 0.001, which says the residuals really are close to lognormal.
+
+It's a trade rather than a free win. Uncorrected gives the conditional median, which is what
+minimises absolute and percentage error, so it wins MAE and MdAPE. Smeared gives the conditional
+mean, which minimises squared error and is the only one that adds up correctly over a set of
+properties, so it wins RMSE and R². Pricing one flat, which is what the app does, the median is the
+better answer, so that's what ships. Valuing a thousand flats, you want the smeared one.
+
+`SmearedRegressor` in `house_price/model.py` does either.
+
+**MdAPE** (median absolute percentage error) is the one to look at. Prices cover two orders of
+magnitude, so an MAE in rupees is dominated by a few very expensive listings. MdAPE tells you how
+wrong a normal prediction is.
+
+**Random forest is 0.2pp better and 260x bigger.** I fixed the rule before looking at the numbers:
+best MdAPE wins, anything within half a point counts as tied, and the smallest file among the ties
+takes it. A 394 MB pickle can't be committed anyway since the brief caps a versioned model at
+50 MB, and paying that for 0.2pp would be a bad trade even if it could.
+
+### Two things worth writing down
+
+**1. 61% of this dataset is duplicate rows.** One advert shows up 821 times. They get removed
+before the split, because a listing in both halves turns the test set into a memory test:
+
+| test split | MdAPE | R² |
+|---|---|---|
+| duplicates left in | 3.4% | 0.929 |
+| de-duplicated (this project) | 17.5% | 0.831 |
+
+The first row is the nicer number and the useless one.
+
+**2. One prediction out of 12,530 was setting the headline metric.** Training on `log1p(price)` and
+undoing it with `expm1` turns a small error in log space into a huge one in rupees at the top of the
+range. Without clipping, the MLP returned ₹300 Cr for a flat worth ₹16 Cr, and that one row dragged
+its R² from 0.744 to **−3.638** while the median error stayed at a perfectly fine 19.5%.
+`ClippedRegressor` caps predictions at the price range seen during fitting, since the model has no
+business predicting eight times more than anything it was shown. It's inside the pickle so the API
+gets it too.
+
+## Cross-check
+
+The same cleaning rules are implemented independently in Python here and in Rust in the sibling
+repository. They agree exactly:
+
+| step | Python | Rust |
+|---|---|---|
+| raw rows | 187,531 | 187,531 |
+| no usable price | −9,684 | −9,684 |
+| no usable area | −90 | −90 |
+| duplicate listings | −113,886 | −113,886 |
+| price-per-sqft outliers | −1,225 | −1,225 |
+| **kept** | **62,646** | **62,646** |
+
+Two separate implementations landing on the same five numbers from 187,531 messy rows is a much
+better check on the parsers than either one's unit tests.
+
+Model scores differ slightly because the two split the data with different random number generators,
+and because the estimators differ. Notably the Vearo MLP (17.9% MdAPE, R² 0.831) beats
+scikit-learn's `MLPRegressor` here (19.5%, 0.744) and matches this project's gradient boosting on R².
+
+## Architecture
+
+```mermaid
+flowchart LR
+    CSV["house_prices.csv<br/>187,531 rows"] --> NB
+
+    subgraph NB["notebooks/ - Jupyter"]
+        direction TB
+        P["parse · clean · de-duplicate"] --> E["EDA plots"]
+        P --> T["train & compare<br/>4 estimators + baseline"]
+    end
+
+    NB --> A["models/<br/>house_price.pkl<br/>locations.json<br/>metrics.json"]
+    A --> B
+
+    subgraph B["backend/ - FastAPI :8000"]
+        direction TB
+        H["GET /health"]
+        L["GET /locations"]
+        PR["POST /predict"]
+    end
+
+    B <-->|JSON over CORS| F["frontend/ - React + Vite :5173"]
+
+    C(["house_price/ - shared package<br/>parsers, ClippedRegressor"]) -.->|same cleaning| NB
+    C -.->|same cleaning| B
+```
+
+`house_price/` is the important bit. The parsers and the clipping wrapper live there and both the
+notebook and the API import them, so a listing can't get cleaned one way in training and another in
+production. Everything after cleaning (imputing, scaling, one-hot, the log target) is inside the
+exported `Pipeline`, so the API doesn't encode anything itself.
+
+## Project structure
+
+```
+.
+├── house_price/                # shared package, imported by the notebook and the backend
+│   ├── cleaning.py             # parse_amount, parse_area_sqft, parse_floor, build_frame, ...
+│   └── model.py                # ClippedRegressor
+├── notebooks/
+│   ├── house_price_model.ipynb # the whole analysis, runs top to bottom
+│   └── data/                   # gitignored, see Dataset below
+├── backend/
+│   ├── app/
+│   │   ├── main.py             # FastAPI app, CORS, model loaded in the lifespan
+│   │   ├── api/routes/prediction.py
+│   │   ├── core/config.py      # pydantic-settings, reads backend/.env
+│   │   ├── schemas/prediction.py
+│   │   └── services/{preprocessing,inference}.py
+│   ├── tests/test_prediction.py
+│   ├── requirements.txt
+│   ├── .env.example
+│   └── Dockerfile
+├── frontend/                   # React + TypeScript + Vite
+├── models/                     # house_price.pkl (1.5 MB), locations.json, metrics.json
+├── reports/                    # plots saved by the notebook
+├── assets/                     # helper tools (dataset downloader for Windows)
+├── docker-compose.yml          # one-command Docker start
+├── Makefile                    # cross-platform build commands
+├── setup.sh                    # Linux / macOS setup script
+├── setup.ps1                   # Windows PowerShell setup script
+├── pyproject.toml              # makes house_price importable from anywhere
+└── requirements-dev.txt        # notebook + plotting deps
+```
+
+## Setup
+
+### Prerequisites
+
+| Tool | Version | Check with |
+|---|---|---|
+| Python | 3.11+ | `python --version` |
+| Node.js + npm | 18+ | `node --version` |
+| Git | any recent | `git --version` |
+
+### Quick start — Docker (any OS)
 
 Requires [Docker Desktop](https://docs.docker.com/get-docker/) or Docker Engine.
 
 ```bash
 git clone https://github.com/0saiog/house-price-python.git
 cd house-price-python
-
-# Copy env files
 cp backend/.env.example backend/.env   # Windows PowerShell: Copy-Item backend\.env.example backend\.env
-
-# Start the API
 docker compose up --build
-# API at http://localhost:8000  |  Swagger at http://localhost:8000/docs
 ```
 
+API at <http://localhost:8000> · Swagger at <http://localhost:8000/docs>
+
 The Docker image bundles the trained model, so no dataset download or notebook run is needed.
+For the **frontend**, use the native setup below.
 
-For the **frontend**, use the native setup below (Option 2 or 3).
+### Quick start — Setup scripts
 
-### Option 2 — Setup script (Linux / macOS / Git Bash)
+**Linux / macOS / Git Bash:**
 
 ```bash
 git clone https://github.com/0saiog/house-price-python.git
@@ -40,7 +217,7 @@ source .venv/bin/activate
 make dev
 ```
 
-### Option 3 — Setup script (Windows PowerShell)
+**Windows PowerShell:**
 
 ```powershell
 git clone https://github.com/0saiog/house-price-python.git
@@ -50,17 +227,19 @@ cd house-price-python
 make dev
 ```
 
-### Option 4 — Manual (any platform)
+### Option A — Makefile (Linux / macOS / Git Bash on Windows)
 
-#### Prerequisites
+```bash
+make setup      # creates venv, installs everything, copies .env files
+source .venv/bin/activate
+make dev        # starts backend + frontend
+```
 
-| Tool | Version | Check |
-|---|---|---|
-| Python | 3.11+ | `python --version` |
-| Node.js + npm | 18+ | `node --version` |
-| Git | any recent | `git --version` |
+Run `make help` to see all available targets.
 
-#### Step 1 — Python environment
+### Option B — Manual (all platforms)
+
+#### 1. Python environment
 
 **Linux / macOS:**
 
@@ -89,28 +268,12 @@ pip install -r requirements-dev.txt
 pip install -e .
 ```
 
-> **`pip install -e .` is required.** The backend imports `house_price` as a package;
-> without the editable install, `uvicorn` cannot find it.
+`pip install -e .` is not optional: `backend/` imports `house_price`, and without it `uvicorn`
+started from inside `backend/` cannot find the package.
 
-#### Step 2 — .env files
+#### 2. Dataset
 
-**Linux / macOS:**
-
-```bash
-cp backend/.env.example backend/.env
-cp frontend/.env.example frontend/.env
-```
-
-**Windows (PowerShell):**
-
-```powershell
-Copy-Item backend\.env.example backend\.env
-Copy-Item frontend\.env.example frontend\.env
-```
-
-#### Step 3 — Dataset (only if retraining)
-
-The trained model is committed, so the API works without downloading the dataset.
+Only needed if you want to retrain. The trained model is committed so the API and frontend work without it.
 
 **Linux / macOS:**
 
@@ -131,13 +294,15 @@ Invoke-WebRequest `
 Expand-Archive -Path "$env:TEMP\house-price.zip" -DestinationPath notebooks\data -Force
 ```
 
-**Windows (with included downloader):**
+**Windows (with the included downloader):**
 
-Run `assets\download.exe` from the repo root — it fetches the dataset into `notebooks\data\`.
+A pre-built Windows dataset downloader is available in `assets/download.exe`.
+Run it from the repository root — it will fetch the Kaggle dataset into `notebooks/data/`.
 
-Source: [kaggle.com/datasets/juhibhojani/house-price](https://www.kaggle.com/datasets/juhibhojani/house-price) (102 MB, 187,531 rows).
+Source: [kaggle.com/datasets/juhibhojani/house-price](https://www.kaggle.com/datasets/juhibhojani/house-price)
+(102 MB, 187,531 rows). Gitignored, so this repo doesn't redistribute it.
 
-#### Step 4 — Notebook (optional)
+#### 3. Notebook
 
 ```bash
 jupyter lab notebooks/house_price_model.ipynb    # Kernel → Restart & Run All
@@ -145,67 +310,67 @@ jupyter lab notebooks/house_price_model.ipynb    # Kernel → Restart & Run All
 
 Takes about a minute. Writes `models/` and `reports/`.
 
-#### Step 5 — Backend
+#### 4. Backend
 
 **Linux / macOS:**
 
 ```bash
-cd backend && uvicorn app.main:app --reload
+cp backend/.env.example backend/.env
+cd backend && uvicorn app.main:app --reload       # http://localhost:8000
 ```
 
 **Windows (PowerShell):**
 
 ```powershell
-cd backend; uvicorn app.main:app --reload
+Copy-Item backend\.env.example backend\.env
+cd backend; uvicorn app.main:app --reload         # http://localhost:8000
 ```
 
 **Windows (cmd):**
 
 ```cmd
+copy backend\.env.example backend\.env
 cd backend
 uvicorn app.main:app --reload
 ```
 
-API at <http://localhost:8000> · Swagger at <http://localhost:8000/docs>
+Swagger UI at <http://localhost:8000/docs>.
 
-#### Step 6 — Frontend
+#### 5. Frontend
 
 **Linux / macOS:**
 
 ```bash
-cd frontend && npm install && npm run dev
+cd frontend
+cp .env.example .env
+npm install
+npm run dev                                       # http://localhost:5173
 ```
 
-**Windows (PowerShell / cmd):**
+**Windows (PowerShell):**
 
 ```powershell
-cd frontend; npm install; npm run dev
+cd frontend
+Copy-Item .env.example .env
+npm install
+npm run dev                                       # http://localhost:5173
 ```
 
-Frontend at <http://localhost:5173>
-
----
-
-## Running tests
+### Tests
 
 ```bash
-# Backend (8 API tests against the real model)
-cd backend && python -m pytest -v
-
-# Frontend (type-check + production build)
-cd frontend && npm run build
+pytest                       # 8 API tests against the real model
+cd frontend && npm run build # type-checks and builds
 ```
 
-## Docker
-
-### Build and run manually
+### Docker
 
 ```bash
 docker build -f backend/Dockerfile -t house-price-api .
-docker run -p 8000:8000 --env-file backend/.env house-price-api
+docker run -p 8000:8000 house-price-api
 ```
 
-### Docker Compose
+Or with Docker Compose:
 
 ```bash
 docker compose up --build
@@ -214,7 +379,7 @@ docker compose up --build
 The `docker-compose.yml` starts the API on port 8000 with health checks.
 For development with hot-reload, use the native setup instead.
 
-### What the image contains
+#### What the Docker image contains
 
 - Python 3.12 slim base
 - All backend dependencies (pinned to match the trained model)
@@ -223,124 +388,24 @@ For development with hot-reload, use the native setup instead.
 - A non-root `app` user
 - A health check endpoint at `/health`
 
----
-
 ## Environment variables
 
-### `backend/.env`
+**`backend/.env`** (see `backend/.env.example`)
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `HOST` | `127.0.0.1` | Bind address (`0.0.0.0` in Docker) |
+| `HOST` | `127.0.0.1` | Bind address |
 | `PORT` | `8000` | Bind port |
-| `MODEL_PATH` | `models/house_price.pkl` | Exported pipeline (resolved from repo root) |
+| `MODEL_PATH` | `models/house_price.pkl` | Exported pipeline. Relative paths resolve from the repo root, not the cwd |
 | `LOCATIONS_PATH` | `models/locations.json` | City list |
-| `ALLOWED_ORIGIN` | `http://localhost:5173` | CORS allowed origin |
-| `LOG_LEVEL` | `INFO` | Python log level |
+| `ALLOWED_ORIGIN` | `http://localhost:5173` | The one origin CORS permits |
+| `LOG_LEVEL` | `INFO` | Log level |
 
-### `frontend/.env`
+**`frontend/.env`** (see `frontend/.env.example`)
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `VITE_API_BASE_URL` | `http://localhost:8000` | API base URL (only `VITE_` prefix reaches the browser) |
-
----
-
-## API reference
-
-### `GET /health`
-
-```json
-{ "status": "ok", "model_loaded": true, "model_name": "ClippedRegressor", "sklearn_version": "1.9.0" }
-```
-
-### `GET /locations`
-
-Returns the cities the model was trained on. The frontend dropdown is populated from here.
-
-### `POST /predict`
-
-| Field | Type | Required | Notes |
-|---|---|---|---|
-| `location` | string | yes | A city from `/locations` |
-| `area_sqft` | number | yes | 0 < area ≤ 1,000,000 |
-| `furnishing` | enum | no | `Furnished` / `Semi-Furnished` / `Unfurnished` |
-| `transaction` | enum | no | `Resale` / `New Property` |
-| `is_carpet_area` | boolean | no | Default `true` |
-| `bathroom`, `balcony`, `car_parking` | number | no | Imputed with training median if omitted |
-| `floor_num`, `total_floors` | number | no | Ground floor is `0` |
-| `ownership`, `facing` | string | no | Encodes as `missing` if omitted |
-| `parking_covered`, `overlooking_garden`, `overlooking_pool`, `overlooking_main_road` | boolean | no | Default `false` |
-
-**Example:**
-
-```bash
-curl -X POST http://localhost:8000/predict \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "location": "mumbai",
-    "area_sqft": 1200,
-    "furnishing": "Semi-Furnished",
-    "transaction": "Resale",
-    "bathroom": 2,
-    "balcony": 1,
-    "floor_num": 3,
-    "total_floors": 10,
-    "car_parking": 1,
-    "parking_covered": true
-  }'
-```
-
-**Response:**
-
-```json
-{
-  "predicted_price": 20964228.25,
-  "predicted_price_formatted": "2.10 Cr",
-  "currency": "INR",
-  "location_known": true
-}
-```
-
-`location_known` is `false` when the city was not in the training data.
-
-**Errors:** `422 Unprocessable Entity` for invalid input (negative area, blank city, floor above building top).
-
----
-
-## Project structure
-
-```
-.
-├── house_price/                # shared package (notebook + backend import this)
-│   ├── cleaning.py             # text parsers: amount, area, floor, parking, ...
-│   └── model.py                # ClippedRegressor, SmearedRegressor
-├── notebooks/
-│   ├── house_price_model.ipynb # full analysis, runs top to bottom
-│   └── data/                   # gitignored — see Dataset section
-├── backend/
-│   ├── app/
-│   │   ├── main.py             # FastAPI app + CORS + model loading
-│   │   ├── api/routes/         # GET /health, GET /locations, POST /predict
-│   │   ├── core/config.py      # pydantic-settings, reads .env
-│   │   ├── schemas/            # request / response models
-│   │   ├── services/           # inference engine + preprocessing
-│   │   └── utils/              # logging config
-│   ├── tests/                  # pytest integration tests
-│   ├── requirements.txt        # pinned runtime deps
-│   ├── .env.example
-│   └── Dockerfile
-├── frontend/                   # React + TypeScript + Vite
-├── models/                     # house_price.pkl, locations.json, metrics.json
-├── reports/                    # plots saved by the notebook
-├── assets/                     # Windows dataset downloader
-├── docker-compose.yml          # one-command Docker start
-├── Makefile                    # cross-platform build targets
-├── setup.sh                    # Linux / macOS setup script
-├── setup.ps1                   # Windows PowerShell setup script
-├── pyproject.toml              # makes house_price importable
-└── requirements-dev.txt        # notebook + plotting deps
-```
+| `VITE_API_BASE_URL` | `http://localhost:8000` | API base URL. Only `VITE_`-prefixed variables reach the browser. |
 
 ## Make targets
 
@@ -364,29 +429,94 @@ Run `make help` to list all available targets:
 > **Windows note:** `make` is not installed by default. Install it via
 > `winget install GnuWin32.Make` or use the setup scripts / Docker instead.
 
----
+## API reference
 
-## Results
+### `GET /health`
 
-Gradient boosting, trained on `log1p(price)`, scored on a held-out test split of 12,530 listings:
+```json
+{ "status": "ok", "model_loaded": true, "model_name": "ClippedRegressor", "sklearn_version": "1.9.0" }
+```
 
-| model | MAE | RMSE | R² | MdAPE | pickle | fit |
-|---|---|---|---|---|---|---|
-| *Rate card (city median × area)* | *₹32.41 Lac* | *₹71.87 Lac* | *0.647* | *24.1%* | – | – |
-| Linear regression | ₹27.15 Lac | ₹61.05 Lac | 0.745 | 20.6% | 0.0 MB | 1.0s |
-| MLP 128-64 | ₹25.98 Lac | ₹61.26 Lac | 0.744 | 19.5% | 0.6 MB | 19.8s |
-| **Gradient boosting** | **₹23.01 Lac** | **₹49.72 Lac** | **0.831** | **17.5%** | 1.5 MB | 3.6s |
-| Random forest | ₹23.64 Lac | ₹50.53 Lac | 0.826 | 17.3% | 393.7 MB | 16.9s |
+### `GET /locations`
 
-Five-fold cross validation gives mean R² **0.816** (sd 0.016).
+The cities the model was trained on. The frontend's dropdown is populated from here, so it can never
+offer a city the model does not know.
+
+### `POST /predict`
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `location` | string | yes | A city from `/locations` |
+| `area_sqft` | number | yes | 0 < area ≤ 1,000,000 |
+| `furnishing` | enum | no | `Furnished` / `Semi-Furnished` / `Unfurnished` |
+| `transaction` | enum | no | `Resale` / `New Property` |
+| `is_carpet_area` | boolean | no (`true`) | False means the area given is super area |
+| `bathroom`, `balcony`, `car_parking` | number | no | Omitted values are imputed with the training median |
+| `floor_num`, `total_floors` | number | no | Ground floor is `0`; a flat above the top floor is rejected |
+| `ownership`, `facing` | string | no | Omitted encodes as the `missing` category the model was trained with |
+| `parking_covered`, `overlooking_garden`, `overlooking_pool`, `overlooking_main_road` | boolean | no (`false`) | |
+
+```bash
+curl -X POST http://localhost:8000/predict \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "location": "mumbai",
+    "area_sqft": 1200,
+    "furnishing": "Semi-Furnished",
+    "transaction": "Resale",
+    "bathroom": 2,
+    "balcony": 1,
+    "floor_num": 3,
+    "total_floors": 10,
+    "car_parking": 1,
+    "parking_covered": true
+  }'
+```
+
+```json
+{
+  "predicted_price": 20964228.25,
+  "predicted_price_formatted": "2.10 Cr",
+  "currency": "INR",
+  "location_known": true
+}
+```
+
+`location_known` is `false` when the city wasn't in the training data. You still get a prediction,
+it's just less reliable, and the UI says so.
+
+**Errors.** `422 Unprocessable Entity` for a body that fails schema or cross-field validation
+(negative area, blank city, a flat above the top floor of its building).
+
+## What the data needed
+
+1. **Price is text.** `"42 Lac"`, `"1.40 Cr"`, `"Call for Price"`. 1 Lac is 100,000, 1 Cr is
+   10,000,000. The 9,684 "Call for Price" rows have no target so they go.
+2. **Areas are text, in ten units**: `sqft`, `sqyrd`, `sqm`, `marla`, `kanal`, `bigha`, `acre` and
+   friends. An unknown unit returns nothing instead of a wrong number.
+3. **Two area columns, both mostly empty.** Carpet is there 43% of the time, super area 57%. Carpet
+   wins when both exist, with an `is_carpet_area` flag. Super area is always bigger, so without the
+   flag that just looks like noise.
+4. **`Floor` is `"3 out of 10"`**, with `Ground` as 0 and basements negative.
+5. **`Bathroom` / `Balcony` contain `"> 10"`**, mapped to 11.
+6. **`overlooking` is a set, not a category.** Three facts in random order make 20 different
+   strings, so they become three yes/no features.
+7. **`Price (in rupees)` is a rate, not a price.** Using it would leak the answer.
+8. **`Dimensions`, `Plot Area` and `Status` carry no information** and are dropped.
+
+## Screenshots
+
+![The prediction form](docs/screenshots/form.png)
+
+![The result page](docs/screenshots/result.png)
 
 ## Limitations
 
-A typical prediction is 17.5% out — too loose to price a flat precisely. The bottleneck is
-`location`: it's city-level, and in Indian property the neighbourhood matters. Two 1,000 sqft
-flats in Mumbai can differ 3x between Bandra and Bhiwandi. The neighbourhood is in the listing
-`Title` and `Description`, neither of which is used here — pulling it out is the obvious next step.
+A typical prediction is 17.5% out, which is too loose to actually price a flat. The limit is
+`location`: it's a city, and in Indian property the neighbourhood is what matters. Two 1,000 sqft
+flats in Mumbai can differ 3x between Bandra and Bhiwandi and nothing in the features separates
+them. The rate card's 24.1% is a direct measurement of how much city plus area leaves unexplained.
 
-## License
-
-See repository for license details.
+The neighbourhood isn't missing from the file. It's in `Title` ("for sale in Punjabi Bagh East")
+and `Description`, neither of which I use here. Pulling it out is the obvious next thing, and it's
+a text parsing job rather than a modelling one.
