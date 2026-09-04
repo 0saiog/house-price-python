@@ -5,7 +5,7 @@ Trained in a Jupyter notebook on 187,531 real listings, served by FastAPI, with 
 
 Stack: pandas, scikit-learn, Jupyter, FastAPI, React + TypeScript + Vite.
 
-There's a sibling repo, [`house-price-app`](https://github.com/razecrs/house-price-app), that does
+There's a sibling repo, [`house-price-app`](https://github.com/0saiog/house-price-vearo), that does
 the same thing in Rust with no Python at all, using
 [Vearo](https://github.com/razecrs/vearo) for the model. The two agree on the data down to the row,
 see [Cross-check](#cross-check).
