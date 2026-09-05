@@ -497,4 +497,4 @@ them. The rate card's 24.1% is a direct measurement of how much city plus area l
 
 The neighbourhood isn't missing from the file. It's in `Title` ("for sale in Punjabi Bagh East")
 and `Description`, neither of which I use here. Pulling it out is the obvious next thing, and it's
-a text parsing job rather than a modelling one...
+a text parsing job rather than a modelling one.
